@@ -10,5 +10,5 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "shop-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "420da05b-0b17-4a2c-a7da-8e695bee2a11"
 migrations_dir = "./migrations"
