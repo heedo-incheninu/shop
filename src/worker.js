@@ -65,6 +65,36 @@ function validQty(value) {
   return Number.isInteger(qty) && qty >= 1 && qty <= 99 ? qty : null;
 }
 
+function randomCustomerKey() {
+  return `customer_${crypto.randomUUID().replaceAll('-', '')}`;
+}
+
+function randomTossOrderId() {
+  return `shop-${crypto.randomUUID()}`;
+}
+
+function validTossOrderId(value) {
+  const orderId = typeof value === 'string' ? value.trim() : '';
+  return /^[A-Za-z0-9_-]{6,64}$/.test(orderId) ? orderId : null;
+}
+
+function validPaymentKey(value) {
+  const paymentKey = typeof value === 'string' ? value.trim() : '';
+  return paymentKey.length >= 1 && paymentKey.length <= 200 ? paymentKey : null;
+}
+
+function paymentMatches(payment, paymentKey, tossOrderId, amount) {
+  return payment?.paymentKey === paymentKey
+    && payment.orderId === tossOrderId
+    && Number(payment.totalAmount) === amount;
+}
+
+async function releasePaymentReservation(env, orderId, userId, paymentKey, idempotencyKey) {
+  await env.DB.prepare(
+    "UPDATE orders SET payment_key = NULL, payment_idempotency_key = NULL WHERE id = ?1 AND user_id = ?2 AND status = 'pending' AND payment_key = ?3 AND payment_idempotency_key = ?4",
+  ).bind(orderId, userId, paymentKey, idempotencyKey).run();
+}
+
 async function cartRows(env, userId) {
   const result = await env.DB.prepare(
     `SELECT c.product_id AS productId, c.qty, p.name, p.price, p.description, cat.name AS category, p.image_url AS imageUrl,
@@ -87,11 +117,24 @@ async function api(request, env, url) {
     return withCookie(json({ ok: true, user }), session.setCookie);
   }
 
-  if (request.method === 'GET' && parts[0] === 'config') return json({ tossClientKey: env.TOSS_CLIENT_KEY || '' });
+  if (request.method === 'GET' && parts[0] === 'config') {
+    const denied = requireAuth(session); if (denied) return denied;
+    const user = await env.DB.prepare('SELECT toss_customer_key AS tossCustomerKey FROM users WHERE id = ?1').bind(session.userId).first();
+    if (!user) return json({ error: '회원 정보를 찾을 수 없습니다.' }, 404);
+    let customerKey = user.tossCustomerKey;
+    if (!customerKey) {
+      const candidate = randomCustomerKey();
+      await env.DB.prepare('UPDATE users SET toss_customer_key = ?1 WHERE id = ?2 AND toss_customer_key IS NULL').bind(candidate, session.userId).run();
+      const updated = await env.DB.prepare('SELECT toss_customer_key AS tossCustomerKey FROM users WHERE id = ?1').bind(session.userId).first();
+      customerKey = updated?.tossCustomerKey;
+    }
+    if (!env.TOSS_CLIENT_KEY || !customerKey) return json({ error: '결제 설정을 불러올 수 없습니다.' }, 503);
+    return withCookie(json({ tossClientKey: env.TOSS_CLIENT_KEY, customerKey }), session.setCookie);
+  }
   if (request.method === 'POST' && parts[0] === 'register') {
     const data = await body(request);
     if (!data?.email || !/^\S+@\S+\.\S+$/.test(data.email) || String(data.password || '').length < 8 || !data.name) return json({ error: '이메일, 이름과 8자 이상 비밀번호를 입력해 주세요.' }, 400);
-    try { await env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?1, ?2, ?3)').bind(data.email.trim().toLowerCase(), await hash(data.password, 12), String(data.name).trim()).run(); } catch { return json({ error: '이미 가입된 이메일입니다.' }, 409); }
+    try { await env.DB.prepare('INSERT INTO users (email, password_hash, name, toss_customer_key) VALUES (?1, ?2, ?3, ?4)').bind(data.email.trim().toLowerCase(), await hash(data.password, 12), String(data.name).trim(), randomCustomerKey()).run(); } catch { return json({ error: '이미 가입된 이메일입니다.' }, 409); }
     return json({ ok: true }, 201);
   }
   if (request.method === 'POST' && parts[0] === 'login') {
@@ -163,16 +206,17 @@ async function api(request, env, url) {
     const denied = requireAuth(session); if (denied) return denied;
     const cart = await cartRows(env, session.userId);
     if (!cart.items.length) return json({ error: '장바구니가 비어 있습니다.' }, 400);
+    const tossOrderId = randomTossOrderId();
     const orderResult = await env.DB.prepare(
-      "INSERT INTO orders (user_id, total, status) VALUES (?1, ?2, 'pending')",
-    ).bind(session.userId, cart.total).run();
+      "INSERT INTO orders (user_id, total, status, toss_order_id) VALUES (?1, ?2, 'pending', ?3)",
+    ).bind(session.userId, cart.total, tossOrderId).run();
     const orderId = orderResult.meta.last_row_id;
     const statements = cart.items.map((item) => env.DB.prepare(
       'INSERT INTO order_items (order_id, product_id, qty, price) VALUES (?1, ?2, ?3, ?4)',
     ).bind(orderId, item.productId, item.qty, item.price));
     statements.push(env.DB.prepare('DELETE FROM cart_items WHERE user_id = ?1').bind(session.userId));
     await env.DB.batch(statements);
-    return withCookie(json({ order: { id: orderId, total: cart.total, status: 'pending', items: cart.items } }, 201), session.setCookie);
+    return withCookie(json({ order: { id: orderId, tossOrderId, total: cart.total, status: 'pending', items: cart.items } }, 201), session.setCookie);
   }
 
   if (parts[0] === 'orders' && parts.length === 1 && request.method === 'GET') {
@@ -183,27 +227,140 @@ async function api(request, env, url) {
 
   if (parts[0] === 'payments' && parts[1] === 'confirm' && request.method === 'POST') {
     const denied = requireAuth(session); if (denied) return denied;
-    const data = await body(request); const orderId = validProductId(data?.orderId); const amount = Number(data?.amount);
-    const order = orderId ? await env.DB.prepare('SELECT id, total, status FROM orders WHERE id = ?1 AND user_id = ?2').bind(orderId, session.userId).first() : null;
-    if (!order || order.total !== amount) return json({ error: '주문 금액을 확인해 주세요.' }, 400);
-    if (order.status === 'paid') return json({ ok: true });
-    if (env.TOSS_SECRET_KEY && data.paymentKey) {
-      const auth = btoa(`${env.TOSS_SECRET_KEY}:`);
-      const toss = await fetch('https://api.tosspayments.com/v1/payments/confirm', { method: 'POST', headers: { authorization: `Basic ${auth}`, 'content-type': 'application/json' }, body: JSON.stringify({ paymentKey: data.paymentKey, orderId: `shop-${order.id}`, amount }) });
-      if (!toss.ok) return json({ error: '결제 승인에 실패했습니다.' }, 400);
+    const data = await body(request);
+    const tossOrderId = validTossOrderId(data?.orderId);
+    const paymentKey = validPaymentKey(data?.paymentKey);
+    const amount = Number(data?.amount);
+    if (!tossOrderId || !paymentKey || !Number.isSafeInteger(amount) || amount < 1) return json({ error: '결제 정보를 확인해 주세요.' }, 400);
+
+    const order = await env.DB.prepare(
+      'SELECT id, total, status, payment_key AS paymentKey, payment_idempotency_key AS paymentIdempotencyKey, toss_order_id AS tossOrderId FROM orders WHERE toss_order_id = ?1 AND user_id = ?2',
+    ).bind(tossOrderId, session.userId).first();
+    if (!order) return json({ error: '주문을 찾을 수 없습니다.' }, 404);
+    if (Number(order.total) !== amount) return json({ error: '주문 금액을 확인해 주세요.' }, 400);
+    if (order.status === 'paid') {
+      return order.paymentKey === paymentKey
+        ? json({ ok: true, orderId: order.id })
+        : json({ error: '이미 다른 결제 정보로 승인된 주문입니다.' }, 409);
     }
-    await env.DB.prepare("UPDATE orders SET status = 'paid', payment_key = ?1, paid_at = CURRENT_TIMESTAMP WHERE id = ?2").bind(data.paymentKey || 'test-payment', order.id).run();
-    return json({ ok: true });
+    if (!env.TOSS_SECRET_KEY) return json({ error: '결제 승인 설정이 완료되지 않았습니다.' }, 503);
+
+    if (order.paymentKey && order.paymentKey !== paymentKey) return json({ error: '다른 결제 승인이 진행 중인 주문입니다.' }, 409);
+    let idempotencyKey = order.paymentIdempotencyKey;
+    if (!order.paymentKey) {
+      try {
+        const candidate = crypto.randomUUID();
+        const reserved = await env.DB.prepare(
+          "UPDATE orders SET payment_key = ?1, payment_idempotency_key = ?2 WHERE id = ?3 AND user_id = ?4 AND toss_order_id = ?5 AND total = ?6 AND status = 'pending' AND payment_key IS NULL",
+        ).bind(paymentKey, candidate, order.id, session.userId, tossOrderId, amount).run();
+        if (reserved.meta.changes) idempotencyKey = candidate;
+        if (!reserved.meta.changes) {
+          const current = await env.DB.prepare('SELECT status, payment_key AS paymentKey, payment_idempotency_key AS paymentIdempotencyKey FROM orders WHERE id = ?1 AND user_id = ?2').bind(order.id, session.userId).first();
+          if (current?.status === 'paid' && current.paymentKey === paymentKey) return json({ ok: true, orderId: order.id });
+          if (current?.status !== 'pending' || current.paymentKey !== paymentKey) return json({ error: '다른 결제 승인이 진행 중인 주문입니다.' }, 409);
+          idempotencyKey = current.paymentIdempotencyKey;
+        }
+      } catch (error) {
+        console.error('Payment reservation failed', error);
+        return json({ error: '이미 다른 주문에 사용된 결제 정보입니다.' }, 409);
+      }
+    }
+
+    if (!idempotencyKey) {
+      const candidate = crypto.randomUUID();
+      await env.DB.prepare(
+        "UPDATE orders SET payment_idempotency_key = ?1 WHERE id = ?2 AND user_id = ?3 AND status = 'pending' AND payment_key = ?4 AND payment_idempotency_key IS NULL",
+      ).bind(candidate, order.id, session.userId, paymentKey).run();
+      const current = await env.DB.prepare('SELECT payment_idempotency_key AS paymentIdempotencyKey FROM orders WHERE id = ?1 AND user_id = ?2 AND payment_key = ?3').bind(order.id, session.userId, paymentKey).first();
+      idempotencyKey = current?.paymentIdempotencyKey;
+    }
+    if (!idempotencyKey) return json({ error: '결제 승인 요청을 준비하지 못했습니다.' }, 409);
+
+    const authorization = btoa(`${env.TOSS_SECRET_KEY}:`);
+    let tossResponse;
+    try {
+      tossResponse = await fetch('https://api.tosspayments.com/v1/payments/confirm', {
+        method: 'POST',
+        headers: {
+          authorization: `Basic ${authorization}`,
+          'content-type': 'application/json',
+          'idempotency-key': idempotencyKey,
+        },
+        body: JSON.stringify({ paymentKey, orderId: tossOrderId, amount }),
+      });
+    } catch (error) {
+      console.error('Toss payment confirmation request failed', error);
+      return json({ error: '결제 승인 서버에 연결하지 못했습니다.' }, 502);
+    }
+
+    let payment = await tossResponse.json().catch(() => ({}));
+    if (!tossResponse.ok) {
+      const confirmationError = payment;
+      const confirmationWasAmbiguous = tossResponse.status >= 500 || [408, 409, 429].includes(tossResponse.status);
+      let lookupResponse;
+      try {
+        lookupResponse = await fetch(`https://api.tosspayments.com/v1/payments/${encodeURIComponent(paymentKey)}`, {
+          headers: { authorization: `Basic ${authorization}` },
+        });
+      } catch (error) {
+        console.error('Toss payment lookup request failed', error);
+        return json({ error: '결제 상태를 확인하지 못했습니다.' }, 502);
+      }
+
+      const lookupPayment = await lookupResponse.json().catch(() => ({}));
+      if (lookupResponse.ok && paymentMatches(lookupPayment, paymentKey, tossOrderId, amount)) {
+        payment = lookupPayment;
+        if (payment.status === 'WAITING_FOR_DEPOSIT') return json({ ok: true, pending: true, orderId: order.id }, 202);
+        if (payment.status !== 'DONE') {
+          if (!confirmationWasAmbiguous) await releasePaymentReservation(env, order.id, session.userId, paymentKey, idempotencyKey);
+          return json({ error: confirmationError.message || '결제 승인에 실패했습니다.' }, confirmationWasAmbiguous ? 502 : 400);
+        }
+      } else if (!confirmationWasAmbiguous && lookupResponse.status < 500) {
+        await releasePaymentReservation(env, order.id, session.userId, paymentKey, idempotencyKey);
+        return json({ error: confirmationError.message || '결제 승인에 실패했습니다.' }, 400);
+      } else {
+        return json({ error: '결제 상태를 확인하지 못했습니다.' }, 502);
+      }
+    }
+
+    if (paymentMatches(payment, paymentKey, tossOrderId, amount) && payment.status === 'WAITING_FOR_DEPOSIT') {
+      return json({ ok: true, pending: true, orderId: order.id }, 202);
+    }
+    if (!paymentMatches(payment, paymentKey, tossOrderId, amount) || payment.status !== 'DONE') {
+      console.error('Unexpected Toss payment confirmation response', { orderId: tossOrderId, status: payment.status });
+      return json({ error: '결제 승인 결과를 확인하지 못했습니다.' }, 502);
+    }
+
+    try {
+      const updated = await env.DB.prepare(
+        "UPDATE orders SET status = 'paid', paid_at = CURRENT_TIMESTAMP WHERE id = ?1 AND user_id = ?2 AND toss_order_id = ?3 AND total = ?4 AND status = 'pending' AND payment_key = ?5",
+      ).bind(order.id, session.userId, tossOrderId, amount, paymentKey).run();
+      if (!updated.meta.changes) {
+        const current = await env.DB.prepare('SELECT status, payment_key AS paymentKey FROM orders WHERE id = ?1 AND user_id = ?2').bind(order.id, session.userId).first();
+        if (current?.status !== 'paid' || current.paymentKey !== paymentKey) return json({ error: '주문 상태를 갱신하지 못했습니다.' }, 409);
+      }
+    } catch (error) {
+      console.error('Payment state update failed', error);
+      return json({ error: '이미 처리된 결제 정보입니다.' }, 409);
+    }
+    return json({ ok: true, orderId: order.id });
   }
 
   if (parts[0] === 'orders' && parts.length === 2 && request.method === 'GET') {
     const denied = requireAuth(session); if (denied) return denied;
     const orderId = validProductId(parts[1]);
     if (!orderId) return json({ error: '잘못된 주문 번호입니다.' }, 400);
-    const order = await env.DB.prepare(
-      'SELECT id, total, status, created_at AS createdAt FROM orders WHERE id = ?1 AND user_id = ?2',
+    let order = await env.DB.prepare(
+      'SELECT id, total, status, toss_order_id AS tossOrderId, created_at AS createdAt FROM orders WHERE id = ?1 AND user_id = ?2',
     ).bind(orderId, session.userId).first();
     if (!order) return json({ error: '주문을 찾을 수 없습니다.' }, 404);
+    if (!order.tossOrderId) {
+      const candidate = randomTossOrderId();
+      await env.DB.prepare('UPDATE orders SET toss_order_id = ?1 WHERE id = ?2 AND user_id = ?3 AND toss_order_id IS NULL').bind(candidate, orderId, session.userId).run();
+      order = await env.DB.prepare(
+        'SELECT id, total, status, toss_order_id AS tossOrderId, created_at AS createdAt FROM orders WHERE id = ?1 AND user_id = ?2',
+      ).bind(orderId, session.userId).first();
+    }
     const items = await env.DB.prepare(
       `SELECT oi.product_id AS productId, oi.qty, oi.price, p.name, p.image_url AS imageUrl
          FROM order_items oi JOIN products p ON p.id = oi.product_id

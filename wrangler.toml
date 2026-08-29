@@ -3,7 +3,7 @@ main = "src/worker.js"
 compatibility_date = "2026-08-29"
 
 [vars]
-TOSS_CLIENT_KEY = "test_ck_D5GePWvyJnrK0W0k6q8gLzN97Eoq"
+TOSS_CLIENT_KEY = "test_gck_docs_Ovk5rk1EwkEbP0W43n07xlzm"
 
 [assets]
 directory = "./public"

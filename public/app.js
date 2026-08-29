@@ -16,6 +16,7 @@ const previewProducts = [
 ];
 const previewCart = [];
 const previewOrders = new Map();
+let activePaymentWidgets = [];
 
 const money = (value) => `${Number(value).toLocaleString('ko-KR')}원`;
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
@@ -97,7 +98,15 @@ function notify(message) {
   notify.timer = window.setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
+function destroyPaymentWidgets() {
+  activePaymentWidgets.forEach((widget) => {
+    try { widget?.destroy?.(); } catch { /* The route can continue even if the SDK already removed its iframe. */ }
+  });
+  activePaymentWidgets = [];
+}
+
 function shell(title, content, className = '') {
+  destroyPaymentWidgets();
   app.innerHTML = `<section class="page ${className}"><div class="page-heading"><h1>${title}</h1></div>${content}</section>`;
 }
 
@@ -201,28 +210,71 @@ async function renderCart() {
 
 async function renderOrder(id) {
   const { order } = await request(`/orders/${id}`);
-  shell('주문 완료', `<div class="order-card"><section class="order-items"><h2>주문한 상품</h2>${order.items.map((item) => `<article class="order-item"><img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" /><div><p>${escapeHtml(item.name)}</p><p class="muted">수량 ${item.qty}개 · ${money(item.price)}</p></div></article>`).join('')}</section><aside class="order-summary"><h2>주문 정보</h2><dl><dt>주문 번호</dt><dd>#${order.id}</dd><dt>주문 금액</dt><dd>${money(order.total)}</dd></dl></aside></div>`);
+  shell(order.status === 'paid' ? '결제 완료' : '주문 완료', `<div class="order-card"><section class="order-items"><h2>주문한 상품</h2>${order.items.map((item) => `<article class="order-item"><img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" /><div><p>${escapeHtml(item.name)}</p><p class="muted">수량 ${item.qty}개 · ${money(item.price)}</p></div></article>`).join('')}</section><aside class="order-summary"><h2>주문 정보</h2><dl><dt>주문 번호</dt><dd>#${order.id}</dd><dt>주문 금액</dt><dd>${money(order.total)}</dd></dl></aside></div>`);
 }
 
 async function renderPayment(id) {
   const { order } = await request(`/orders/${id}`);
-  shell('결제하기', `<div class="payment-layout"><section class="payment-card"><h2>결제 수단</h2><div id="payment-method"></div><div id="agreement"></div><p class="muted">테스트 결제입니다. 실제로 금액이 청구되지 않습니다.</p><button class="primary-button" id="payment-button" type="button">결제하기</button></section><aside class="summary-card"><h2>주문 금액</h2><p class="summary-total"><span>합계</span><span>${money(order.total)}</span></p></aside></div>`, 'payment-page');
+  if (order.status === 'paid') {
+    history.replaceState({}, '', `/order/${order.id}`);
+    await renderOrder(order.id);
+    return;
+  }
+  if (!order.tossOrderId) throw new Error('결제 주문 번호를 불러오지 못했습니다.');
+  shell('결제하기', `<div class="payment-layout"><section class="payment-card"><h2>결제 수단</h2><div id="payment-method"></div><div id="agreement"></div><p class="muted">테스트 결제입니다. 실제로 금액이 청구되지 않습니다.</p><button class="primary-button" id="payment-button" type="button" disabled>결제하기</button></section><aside class="summary-card"><h2>주문 금액</h2><p class="summary-total"><span>합계</span><span>${money(order.total)}</span></p></aside></div>`, 'payment-page');
   const button = document.querySelector('#payment-button');
   try {
     const config = await request('/config');
-    if (!window.TossPayments || !config.tossClientKey) throw new Error('결제 테스트 키가 설정되지 않았습니다.');
-    const widgets = TossPayments(config.tossClientKey).widgets({ customerKey: 'ANONYMOUS' });
+    if (!window.TossPayments || !config.tossClientKey || !config.customerKey) throw new Error('결제 테스트 설정을 불러오지 못했습니다.');
+    const widgets = window.TossPayments(config.tossClientKey).widgets({ customerKey: config.customerKey });
     await widgets.setAmount({ currency: 'KRW', value: order.total });
-    await widgets.renderPaymentMethods({ selector: '#payment-method' });
-    await widgets.renderAgreement({ selector: '#agreement' });
-    button.addEventListener('click', () => widgets.requestPayment({ orderId: `shop-${order.id}`, orderName: order.items.length > 1 ? `${order.items[0].name} 외 ${order.items.length - 1}건` : order.items[0].name, successUrl: `${location.origin}/pay/success?orderId=${order.id}`, failUrl: `${location.origin}/pay/fail?orderId=${order.id}` }).catch((error) => notify(error.message)));
+    const paymentMethodWidget = await widgets.renderPaymentMethods({ selector: '#payment-method' });
+    if (paymentMethodWidget) activePaymentWidgets.push(paymentMethodWidget);
+    const agreementWidget = await widgets.renderAgreement({ selector: '#agreement' });
+    if (agreementWidget) activePaymentWidgets.push(agreementWidget);
+    button.disabled = false;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        await widgets.requestPayment({
+          orderId: order.tossOrderId,
+          orderName: order.items.length > 1 ? `${order.items[0].name} 외 ${order.items.length - 1}건` : order.items[0].name,
+          successUrl: `${location.origin}/pay/success`,
+          failUrl: `${location.origin}/pay/fail?internalOrderId=${encodeURIComponent(order.id)}`,
+        });
+      } catch (error) {
+        button.disabled = false;
+        notify(error.message || '결제를 시작하지 못했습니다.');
+      }
+    });
   } catch (error) { button.disabled = true; notify(error.message); }
 }
 
 async function renderPaymentResult(success) {
-  const params = new URLSearchParams(location.search); const orderId = params.get('orderId');
-  if (!success) { shell('결제 실패', `<div class="empty">결제가 취소되었거나 실패했습니다.<br><a href="/pay/${encodeURIComponent(orderId || '')}">다시 결제하기</a></div>`); return; }
-  try { await request('/payments/confirm', { method: 'POST', body: JSON.stringify({ orderId, amount: Number(params.get('amount')), paymentKey: params.get('paymentKey') }) }); history.replaceState({}, '', `/order/${orderId}`); await renderOrder(orderId); notify('결제가 완료되었습니다.'); } catch (error) { shell('결제 실패', `<div class="empty">${escapeHtml(error.message)}</div>`); }
+  const params = new URLSearchParams(location.search);
+  if (!success) {
+    const internalOrderId = Number(params.get('internalOrderId'));
+    const canRetry = Number.isInteger(internalOrderId) && internalOrderId > 0;
+    const message = params.get('message') || '결제가 취소되었거나 실패했습니다.';
+    const retryLink = canRetry
+      ? `<a class="outline-button login-link" href="/pay/${internalOrderId}">다시 결제하기</a>`
+      : '<a class="outline-button login-link" href="/mypage">주문 내역 보기</a>';
+    shell('결제 실패', `<div class="empty"><p>${escapeHtml(message)}</p>${retryLink}</div>`);
+    return;
+  }
+
+  const orderId = params.get('orderId');
+  const paymentKey = params.get('paymentKey');
+  const amount = Number(params.get('amount'));
+  try {
+    const result = await request('/payments/confirm', { method: 'POST', body: JSON.stringify({ orderId, amount, paymentKey }) });
+    history.replaceState({}, '', `/order/${result.orderId}`);
+    await renderOrder(result.orderId);
+    notify(result.pending ? '입금 확인을 기다리고 있습니다.' : '결제가 완료되었습니다.');
+  } catch (error) {
+    const retryUrl = `${location.pathname}${location.search}`;
+    shell('결제 승인 실패', `<div class="empty"><p>${escapeHtml(error.message)}</p><a class="outline-button login-link" href="${escapeHtml(retryUrl)}">승인 다시 시도</a></div>`);
+  }
 }
 
 async function renderMypage() {

@@ -58,6 +58,7 @@ button { cursor: pointer; }
 .quantity-control output { border-left: 1px solid #c6cdd4; border-right: 1px solid #c6cdd4; font-size: 14px; }
 .primary-button, .secondary-button, .outline-button { width: 100%; min-height: 44px; border-radius: 4px; padding: 10px 16px; font-size: 16px; font-weight: 700; }
 .primary-button { border: 1px solid #232b35; background: #232b35; color: #ffffff; }
+.primary-button:disabled { border-color: #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
 .secondary-button { border: 1px solid #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
 .outline-button { border: 1px solid #232b35; background: #ffffff; color: #232b35; cursor: pointer; }
 
