@@ -153,7 +153,9 @@ async function renderDetail(id) {
   }));
   document.querySelector('#add-to-cart').addEventListener('click', async () => {
     try {
-      await request('/cart', { method: 'POST', body: JSON.stringify({ productId: product.id, qty }) });
+      const productId = Number(product.id);
+      if (!Number.isInteger(productId) || productId < 1) throw new Error('상품을 찾을 수 없습니다.');
+      await request('/cart', { method: 'POST', body: JSON.stringify({ productId, qty }) });
       await updateCartCount();
       notify('장바구니에 담았습니다.');
     } catch (error) { notify(error.message); }
@@ -161,11 +163,12 @@ async function renderDetail(id) {
 }
 
 function cartRow(item) {
-  return `<article class="cart-row" data-product-id="${item.productId}">
+  const productId = Number(item.productId ?? item.id);
+  return `<article class="cart-row" data-product-id="${productId}">
     <img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" />
-    <div class="cart-row-content"><div class="cart-row-top"><h2>${escapeHtml(item.name)}</h2><button class="delete-button" data-delete="${item.productId}" type="button">삭제</button></div>
+    <div class="cart-row-content"><div class="cart-row-top"><h2>${escapeHtml(item.name)}</h2><button class="delete-button" data-delete="${productId}" type="button">삭제</button></div>
       <p class="price">${money(item.price)}</p><p class="subtotal">수량 ${item.qty}개 · 소계 ${money(item.subtotal)}</p>
-      <div class="quantity-control"><button type="button" data-cart-qty="-1" data-product-id="${item.productId}" aria-label="수량 줄이기">−</button><output>${item.qty}</output><button type="button" data-cart-qty="1" data-product-id="${item.productId}" aria-label="수량 늘리기">＋</button></div>
+      <div class="quantity-control"><button type="button" data-cart-qty="-1" data-product-id="${productId}" aria-label="수량 줄이기">−</button><output>${item.qty}</output><button type="button" data-cart-qty="1" data-product-id="${productId}" aria-label="수량 늘리기">＋</button></div>
     </div>
   </article>`;
 }

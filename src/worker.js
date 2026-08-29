@@ -54,7 +54,7 @@ async function body(request) {
 }
 
 function validProductId(value) {
-  const id = Number(value);
+  const id = Number(typeof value === 'string' ? value.trim() : value);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
@@ -78,7 +78,7 @@ async function api(request, env, url) {
   if (!env.DB) return json({ error: 'D1 DB binding is not configured.' }, 500);
   const session = await sessionUser(request, env);
   const path = url.pathname.replace(/^\/api\/?/, '').replace(/\/$/, '');
-  const parts = path ? path.split('/') : [];
+  const parts = path ? path.split('/').map((part) => decodeURIComponent(part)) : [];
 
   if (request.method === 'GET' && parts[0] === 'session') {
     return withCookie(json({ ok: true }), session.setCookie);
