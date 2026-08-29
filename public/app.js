@@ -17,6 +17,7 @@ const previewProducts = [
 const previewCart = [];
 const previewOrders = new Map();
 let activePaymentWidgets = [];
+let activeEnglishRequest = null;
 
 const money = (value) => `${Number(value).toLocaleString('ko-KR')}원`;
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
@@ -44,6 +45,9 @@ async function previewRequest(path, options = {}) {
   if (parts[0] === 'products' && !parts[1]) {
     const category = new URLSearchParams(queryString).get('category');
     return { products: category ? previewProducts.filter((product) => product.category === category) : previewProducts, categories: categories.slice(1) };
+  }
+  if (parts[0] === 'products' && parts[1] && parts[2] === 'english' && options.method === 'POST') {
+    throw new Error('영어 소개는 배포된 사이트에서 사용할 수 있습니다.');
   }
   if (parts[0] === 'products' && parts[1]) {
     const product = previewProducts.find((item) => item.id === Number(parts[1]));
@@ -105,13 +109,24 @@ function destroyPaymentWidgets() {
   activePaymentWidgets = [];
 }
 
+function cancelEnglishRequest() {
+  activeEnglishRequest?.abort();
+  activeEnglishRequest = null;
+}
+
 function shell(title, content, className = '') {
   destroyPaymentWidgets();
+  cancelEnglishRequest();
   app.innerHTML = `<section class="page ${className}"><div class="page-heading"><h1>${title}</h1></div>${content}</section>`;
 }
 
 async function updateCartCount() {
   try {
+    const session = await request('/session');
+    if (!filePreview && !session.user) {
+      cartCount.hidden = true;
+      return;
+    }
     const data = await request('/cart');
     const count = data.items.reduce((sum, item) => sum + item.qty, 0);
     cartCount.textContent = count;
@@ -155,6 +170,11 @@ async function renderDetail(id) {
       <p class="description">${escapeHtml(product.description)}</p>
       <div class="quantity-row"><span>수량</span><div class="quantity-control"><button type="button" data-detail-qty="-1" aria-label="수량 줄이기">−</button><output id="detail-qty">1</output><button type="button" data-detail-qty="1" aria-label="수량 늘리기">＋</button></div></div>
       <button class="primary-button" type="button" id="add-to-cart">장바구니 담기</button>
+      <div class="english-section">
+        <button class="outline-button" type="button" id="english-button" aria-controls="english-result" aria-expanded="false">English</button>
+        <p class="english-status" id="english-status" role="status" aria-live="polite" aria-atomic="true"></p>
+        <p class="english-result" id="english-result" lang="en" hidden></p>
+      </div>
     </div>
   </div>`);
   let qty = 1;
@@ -172,6 +192,40 @@ async function renderDetail(id) {
       await updateCartCount();
       notify('장바구니에 담았습니다.');
     } catch (error) { notify(error.message); }
+  });
+  const englishButton = document.querySelector('#english-button');
+  const englishStatus = document.querySelector('#english-status');
+  const englishResult = document.querySelector('#english-result');
+  englishButton.addEventListener('click', async () => {
+    if (activeEnglishRequest) return;
+    const controller = new AbortController();
+    activeEnglishRequest = controller;
+    englishButton.disabled = true;
+    englishButton.textContent = '불러오는 중…';
+    englishButton.setAttribute('aria-busy', 'true');
+    englishResult.setAttribute('aria-busy', 'true');
+    englishStatus.textContent = '영어 소개를 만들고 있습니다.';
+    try {
+      const data = await request(`/products/${product.id}/english`, { method: 'POST', signal: controller.signal });
+      if (activeEnglishRequest !== controller || !englishButton.isConnected) return;
+      if (typeof data.introduction !== 'string' || !data.introduction.trim()) throw new Error('영어 소개를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.');
+      englishResult.textContent = data.introduction;
+      englishResult.hidden = false;
+      englishButton.setAttribute('aria-expanded', 'true');
+      englishStatus.textContent = '';
+    } catch (error) {
+      if (error.name !== 'AbortError' && activeEnglishRequest === controller && englishButton.isConnected) {
+        englishStatus.textContent = error.message || '영어 소개를 만들지 못했습니다. 잠시 후 다시 시도해 주세요.';
+      }
+    } finally {
+      if (activeEnglishRequest === controller && englishButton.isConnected) {
+        activeEnglishRequest = null;
+        englishButton.disabled = false;
+        englishButton.textContent = 'English';
+        englishButton.removeAttribute('aria-busy');
+        englishResult.removeAttribute('aria-busy');
+      }
+    }
   });
 }
 
@@ -291,6 +345,7 @@ async function renderMypage() {
 }
 
 async function render() {
+  cancelEnglishRequest();
   const publicMarker = '/public/';
   const path = filePreview
     ? `/${location.pathname.includes(publicMarker) ? location.pathname.split(publicMarker)[1] : ''}`.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/'

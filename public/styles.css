@@ -61,6 +61,12 @@ button { cursor: pointer; }
 .primary-button:disabled { border-color: #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
 .secondary-button { border: 1px solid #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
 .outline-button { border: 1px solid #232b35; background: #ffffff; color: #232b35; cursor: pointer; }
+.outline-button:disabled { border-color: #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
+.english-section { border-top: 1px solid #e0e3e7; margin-top: 18px; padding-top: 18px; }
+.english-status { margin: 10px 0 0; color: #667380; font-size: 13px; line-height: 1.5; }
+.english-status:empty { display: none; }
+.english-result { border: 1px solid #e0e3e7; margin: 12px 0 0; padding: 14px; background: #ffffff; color: #232b35; font-size: 15px; line-height: 1.6; font-weight: 400; }
+.english-result[hidden] { display: none; }
 
 .cart-page { background: #f0f0f0; padding: 40px 0 80px; min-height: calc(100vh - 80px); }
 .cart-page .page { margin-top: 0; }
