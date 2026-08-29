@@ -1,3 +1,5 @@
+import { compare, hash } from 'bcryptjs';
+
 const SESSION_COOKIE = 'shop_sid';
 const SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const CATEGORIES = ['잡화', '뷰티', '신발', '식품'];
@@ -27,30 +29,11 @@ async function sessionUser(request, env) {
     setCookie = sessionCookie(sid);
   }
   const existingSession = await env.DB.prepare('SELECT user_id AS userId FROM sessions WHERE id = ?1').bind(sid).first();
-  if (existingSession) return { userId: existingSession.userId, sid, setCookie: null };
-  const email = `guest_${sid}@local.invalid`;
-  let user = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
-  if (!user) {
-    const result = await env.DB.prepare(
-      "INSERT OR IGNORE INTO users (email, password_hash, name) VALUES (?1, '!guest-session!', 'Guest')",
-    ).bind(email).run();
-    user = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
-    if (!user) user = { id: result.meta.last_row_id };
-  }
-  await env.DB.prepare('INSERT OR IGNORE INTO sessions (id, user_id) VALUES (?1, ?2)').bind(sid, user.id).run();
-  return { userId: user.id, sid, setCookie };
+  return { userId: existingSession?.userId || null, sid, setCookie, authenticated: Boolean(existingSession) };
 }
 
-async function hashPassword(password, salt = crypto.randomUUID()) {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256);
-  return `${salt}:${btoa(String.fromCharCode(...new Uint8Array(bits)))}`;
-}
-
-async function verifyPassword(password, stored) {
-  const [salt, expected] = String(stored || '').split(':');
-  if (!salt || !expected) return false;
-  return (await hashPassword(password, salt)).split(':')[1] === expected;
+function requireAuth(session) {
+  return session.authenticated && session.userId ? null : json({ error: '로그인이 필요합니다.' }, 401);
 }
 
 function withCookie(response, cookie) {
@@ -104,12 +87,12 @@ async function api(request, env, url) {
   if (request.method === 'POST' && parts[0] === 'register') {
     const data = await body(request);
     if (!data?.email || !/^\S+@\S+\.\S+$/.test(data.email) || String(data.password || '').length < 8 || !data.name) return json({ error: '이메일, 이름과 8자 이상 비밀번호를 입력해 주세요.' }, 400);
-    try { await env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?1, ?2, ?3)').bind(data.email.trim().toLowerCase(), await hashPassword(data.password), String(data.name).trim()).run(); } catch { return json({ error: '이미 가입된 이메일입니다.' }, 409); }
+    try { await env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?1, ?2, ?3)').bind(data.email.trim().toLowerCase(), await hash(data.password, 12), String(data.name).trim()).run(); } catch { return json({ error: '이미 가입된 이메일입니다.' }, 409); }
     return json({ ok: true }, 201);
   }
   if (request.method === 'POST' && parts[0] === 'login') {
     const data = await body(request); const user = await env.DB.prepare('SELECT id, email, name, password_hash AS passwordHash FROM users WHERE email = ?1').bind(String(data?.email || '').trim().toLowerCase()).first();
-    if (!user || !await verifyPassword(String(data?.password || ''), user.passwordHash)) return json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' }, 401);
+    if (!user || !await compare(String(data?.password || ''), user.passwordHash)) return json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' }, 401);
     const sid = crypto.randomUUID(); await env.DB.prepare('INSERT INTO sessions (id, user_id) VALUES (?1, ?2)').bind(sid, user.id).run();
     return withCookie(json({ user: { id: user.id, email: user.email, name: user.name } }), sessionCookie(sid));
   }
@@ -138,10 +121,12 @@ async function api(request, env, url) {
   }
 
   if (parts[0] === 'cart' && parts.length === 1 && request.method === 'GET') {
+    const denied = requireAuth(session); if (denied) return denied;
     return withCookie(json(await cartRows(env, session.userId)), session.setCookie);
   }
 
   if (parts[0] === 'cart' && parts.length === 1 && request.method === 'POST') {
+    const denied = requireAuth(session); if (denied) return denied;
     const data = await body(request);
     const productId = validProductId(data?.productId);
     const qty = validQty(data?.qty);
@@ -156,6 +141,7 @@ async function api(request, env, url) {
   }
 
   if (parts[0] === 'cart' && parts.length === 2 && ['PATCH', 'DELETE'].includes(request.method)) {
+    const denied = requireAuth(session); if (denied) return denied;
     const productId = validProductId(parts[1]);
     if (!productId) return json({ error: '잘못된 상품 번호입니다.' }, 400);
     if (request.method === 'DELETE') {
@@ -170,6 +156,7 @@ async function api(request, env, url) {
   }
 
   if (parts[0] === 'orders' && parts.length === 1 && request.method === 'POST') {
+    const denied = requireAuth(session); if (denied) return denied;
     const cart = await cartRows(env, session.userId);
     if (!cart.items.length) return json({ error: '장바구니가 비어 있습니다.' }, 400);
     const orderResult = await env.DB.prepare(
@@ -185,11 +172,13 @@ async function api(request, env, url) {
   }
 
   if (parts[0] === 'orders' && parts.length === 1 && request.method === 'GET') {
+    const denied = requireAuth(session); if (denied) return denied;
     const result = await env.DB.prepare('SELECT id, total, status, created_at AS createdAt FROM orders WHERE user_id = ?1 ORDER BY id DESC').bind(session.userId).all();
     return withCookie(json({ orders: result.results || [] }), session.setCookie);
   }
 
   if (parts[0] === 'payments' && parts[1] === 'confirm' && request.method === 'POST') {
+    const denied = requireAuth(session); if (denied) return denied;
     const data = await body(request); const orderId = validProductId(data?.orderId); const amount = Number(data?.amount);
     const order = orderId ? await env.DB.prepare('SELECT id, total, status FROM orders WHERE id = ?1 AND user_id = ?2').bind(orderId, session.userId).first() : null;
     if (!order || order.total !== amount) return json({ error: '주문 금액을 확인해 주세요.' }, 400);
@@ -204,6 +193,7 @@ async function api(request, env, url) {
   }
 
   if (parts[0] === 'orders' && parts.length === 2 && request.method === 'GET') {
+    const denied = requireAuth(session); if (denied) return denied;
     const orderId = validProductId(parts[1]);
     if (!orderId) return json({ error: '잘못된 주문 번호입니다.' }, 400);
     const order = await env.DB.prepare(
