@@ -189,8 +189,8 @@ async function renderCart() {
   document.querySelector('#order-button')?.addEventListener('click', async () => {
     try {
       const result = await request('/orders', { method: 'POST' });
-      if (filePreview) { history.pushState({}, '', `./order/${result.order.id}`); await render(); }
-      else location.assign(`/order/${result.order.id}`);
+      if (filePreview) { history.pushState({}, '', `./pay/${result.order.id}`); await render(); }
+      else location.assign(`/pay/${result.order.id}`);
     } catch (error) { notify(error.message); }
   });
 }
@@ -198,6 +198,32 @@ async function renderCart() {
 async function renderOrder(id) {
   const { order } = await request(`/orders/${id}`);
   shell('주문 완료', `<div class="order-card"><section class="order-items"><h2>주문한 상품</h2>${order.items.map((item) => `<article class="order-item"><img src="${item.imageUrl}" alt="${escapeHtml(item.name)}" /><div><p>${escapeHtml(item.name)}</p><p class="muted">수량 ${item.qty}개 · ${money(item.price)}</p></div></article>`).join('')}</section><aside class="order-summary"><h2>주문 정보</h2><dl><dt>주문 번호</dt><dd>#${order.id}</dd><dt>주문 금액</dt><dd>${money(order.total)}</dd></dl></aside></div>`);
+}
+
+async function renderPayment(id) {
+  const { order } = await request(`/orders/${id}`);
+  shell('결제하기', `<div class="payment-layout"><section class="payment-card"><h2>결제 수단</h2><div id="payment-method"></div><div id="agreement"></div><p class="muted">테스트 결제입니다. 실제로 금액이 청구되지 않습니다.</p><button class="primary-button" id="payment-button" type="button">결제하기</button></section><aside class="summary-card"><h2>주문 금액</h2><p class="summary-total"><span>합계</span><span>${money(order.total)}</span></p></aside></div>`, 'payment-page');
+  const button = document.querySelector('#payment-button');
+  try {
+    const config = await request('/config');
+    if (!window.TossPayments || !config.tossClientKey) throw new Error('결제 테스트 키가 설정되지 않았습니다.');
+    const widgets = TossPayments(config.tossClientKey).widgets({ customerKey: 'ANONYMOUS' });
+    await widgets.setAmount({ currency: 'KRW', value: order.total });
+    await widgets.renderPaymentMethods({ selector: '#payment-method' });
+    await widgets.renderAgreement({ selector: '#agreement' });
+    button.addEventListener('click', () => widgets.requestPayment({ orderId: `shop-${order.id}`, orderName: order.items.length > 1 ? `${order.items[0].name} 외 ${order.items.length - 1}건` : order.items[0].name, successUrl: `${location.origin}/pay/success?orderId=${order.id}`, failUrl: `${location.origin}/pay/fail?orderId=${order.id}` }).catch((error) => notify(error.message)));
+  } catch (error) { button.disabled = true; notify(error.message); }
+}
+
+async function renderPaymentResult(success) {
+  const params = new URLSearchParams(location.search); const orderId = params.get('orderId');
+  if (!success) { shell('결제 실패', `<div class="empty">결제가 취소되었거나 실패했습니다.<br><a href="/pay/${encodeURIComponent(orderId || '')}">다시 결제하기</a></div>`); return; }
+  try { await request('/payments/confirm', { method: 'POST', body: JSON.stringify({ orderId, amount: Number(params.get('amount')), paymentKey: params.get('paymentKey') }) }); history.replaceState({}, '', `/order/${orderId}`); await renderOrder(orderId); notify('결제가 완료되었습니다.'); } catch (error) { shell('결제 실패', `<div class="empty">${escapeHtml(error.message)}</div>`); }
+}
+
+async function renderMypage() {
+  const session = await request('/session'); const data = await request('/orders');
+  shell('마이페이지', `<div class="account-card"><h2>${escapeHtml(session.user?.name || 'Guest')}님</h2><p class="muted">${escapeHtml(session.user?.email || '')}</p></div><section class="orders-card"><h2>주문 내역</h2>${data.orders.length ? data.orders.map((order) => `<a class="order-history-row" href="/order/${order.id}"><span>#${order.id}</span><span>${money(order.total)}</span><span>${order.status === 'paid' ? '결제 완료' : '결제 대기'}</span></a>`).join('') : '<p class="muted">주문 내역이 없습니다.</p>'}</section>`);
 }
 
 async function render() {
@@ -209,6 +235,10 @@ async function render() {
   try {
     if (path === '/' || path === '') await renderHome();
     else if (path === '/cart') await renderCart();
+    else if (path.startsWith('/pay/success')) await renderPaymentResult(true);
+    else if (path.startsWith('/pay/fail')) await renderPaymentResult(false);
+    else if (path.startsWith('/pay/')) await renderPayment(path.split('/')[2]);
+    else if (path === '/mypage') await renderMypage();
     else if (path.startsWith('/product/')) await renderDetail(path.split('/')[2]);
     else if (path.startsWith('/order/')) await renderOrder(path.split('/')[2]);
     else { if (!filePreview) history.replaceState({}, '', '/'); await renderHome(); }

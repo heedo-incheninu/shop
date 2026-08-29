@@ -96,5 +96,14 @@ button { cursor: pointer; }
 .order-summary dt { color: #667380; font-size: 14px; }
 .order-summary dd { margin: 8px 0 24px; color: #232b35; font-size: 22px; font-weight: 700; }
 
+.payment-layout { display: grid; grid-template-columns: 630px 300px; gap: 11px; align-items: start; }
+.payment-card, .account-card, .orders-card { border: 1px solid #e0e3e7; border-radius: 5px; background: #ffffff; padding: 20px; }
+.payment-card h2, .account-card h2, .orders-card h2 { margin: 0 0 20px; color: #232b35; font-size: 20px; font-weight: 700; }
+.payment-card .muted, .account-card .muted, .orders-card .muted { color: #667380; font-size: 14px; }
+.payment-card .primary-button { margin-top: 14px; }
+.orders-card { margin-top: 14px; }
+.order-history-row { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid #e0e3e7; padding: 16px 0; color: #232b35; font-size: 14px; }
+.order-history-row span:nth-child(2), .order-history-row span:nth-child(3) { text-align: right; }
+
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; border: 1px solid #232b35; border-radius: 4px; background: #232b35; color: #ffffff; padding: 12px 18px; font-size: 14px; transition: opacity .15s ease, transform .15s ease; }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }

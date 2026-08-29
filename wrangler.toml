@@ -2,6 +2,9 @@ name = "shop"
 main = "src/worker.js"
 compatibility_date = "2026-08-29"
 
+[vars]
+TOSS_CLIENT_KEY = "test_ck_D5GePWvyJnrK0W0k6q8gLzN97Eoq"
+
 [assets]
 directory = "./public"
 binding = "ASSETS"

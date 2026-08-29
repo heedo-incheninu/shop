@@ -26,6 +26,8 @@ async function sessionUser(request, env) {
     sid = crypto.randomUUID();
     setCookie = sessionCookie(sid);
   }
+  const existingSession = await env.DB.prepare('SELECT user_id AS userId FROM sessions WHERE id = ?1').bind(sid).first();
+  if (existingSession) return { userId: existingSession.userId, sid, setCookie: null };
   const email = `guest_${sid}@local.invalid`;
   let user = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
   if (!user) {
@@ -35,7 +37,20 @@ async function sessionUser(request, env) {
     user = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first();
     if (!user) user = { id: result.meta.last_row_id };
   }
-  return { userId: user.id, setCookie };
+  await env.DB.prepare('INSERT OR IGNORE INTO sessions (id, user_id) VALUES (?1, ?2)').bind(sid, user.id).run();
+  return { userId: user.id, sid, setCookie };
+}
+
+async function hashPassword(password, salt = crypto.randomUUID()) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256);
+  return `${salt}:${btoa(String.fromCharCode(...new Uint8Array(bits)))}`;
+}
+
+async function verifyPassword(password, stored) {
+  const [salt, expected] = String(stored || '').split(':');
+  if (!salt || !expected) return false;
+  return (await hashPassword(password, salt)).split(':')[1] === expected;
 }
 
 function withCookie(response, cookie) {
@@ -81,7 +96,26 @@ async function api(request, env, url) {
   const parts = path ? path.split('/').map((part) => decodeURIComponent(part)) : [];
 
   if (request.method === 'GET' && parts[0] === 'session') {
-    return withCookie(json({ ok: true }), session.setCookie);
+    const user = await env.DB.prepare('SELECT id, email, name FROM users WHERE id = ?1').bind(session.userId).first();
+    return withCookie(json({ ok: true, user }), session.setCookie);
+  }
+
+  if (request.method === 'GET' && parts[0] === 'config') return json({ tossClientKey: env.TOSS_CLIENT_KEY || '' });
+  if (request.method === 'POST' && parts[0] === 'register') {
+    const data = await body(request);
+    if (!data?.email || !/^\S+@\S+\.\S+$/.test(data.email) || String(data.password || '').length < 8 || !data.name) return json({ error: '이메일, 이름과 8자 이상 비밀번호를 입력해 주세요.' }, 400);
+    try { await env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?1, ?2, ?3)').bind(data.email.trim().toLowerCase(), await hashPassword(data.password), String(data.name).trim()).run(); } catch { return json({ error: '이미 가입된 이메일입니다.' }, 409); }
+    return json({ ok: true }, 201);
+  }
+  if (request.method === 'POST' && parts[0] === 'login') {
+    const data = await body(request); const user = await env.DB.prepare('SELECT id, email, name, password_hash AS passwordHash FROM users WHERE email = ?1').bind(String(data?.email || '').trim().toLowerCase()).first();
+    if (!user || !await verifyPassword(String(data?.password || ''), user.passwordHash)) return json({ error: '이메일 또는 비밀번호가 올바르지 않습니다.' }, 401);
+    const sid = crypto.randomUUID(); await env.DB.prepare('INSERT INTO sessions (id, user_id) VALUES (?1, ?2)').bind(sid, user.id).run();
+    return withCookie(json({ user: { id: user.id, email: user.email, name: user.name } }), sessionCookie(sid));
+  }
+  if (request.method === 'POST' && parts[0] === 'logout') {
+    const sid = readCookie(request, SESSION_COOKIE); if (sid) await env.DB.prepare('DELETE FROM sessions WHERE id = ?1').bind(sid).run();
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json', 'set-cookie': `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax` } });
   }
 
   if (request.method === 'GET' && parts[0] === 'products' && !parts[1]) {
@@ -148,6 +182,25 @@ async function api(request, env, url) {
     statements.push(env.DB.prepare('DELETE FROM cart_items WHERE user_id = ?1').bind(session.userId));
     await env.DB.batch(statements);
     return withCookie(json({ order: { id: orderId, total: cart.total, status: 'pending', items: cart.items } }, 201), session.setCookie);
+  }
+
+  if (parts[0] === 'orders' && parts.length === 1 && request.method === 'GET') {
+    const result = await env.DB.prepare('SELECT id, total, status, created_at AS createdAt FROM orders WHERE user_id = ?1 ORDER BY id DESC').bind(session.userId).all();
+    return withCookie(json({ orders: result.results || [] }), session.setCookie);
+  }
+
+  if (parts[0] === 'payments' && parts[1] === 'confirm' && request.method === 'POST') {
+    const data = await body(request); const orderId = validProductId(data?.orderId); const amount = Number(data?.amount);
+    const order = orderId ? await env.DB.prepare('SELECT id, total, status FROM orders WHERE id = ?1 AND user_id = ?2').bind(orderId, session.userId).first() : null;
+    if (!order || order.total !== amount) return json({ error: '주문 금액을 확인해 주세요.' }, 400);
+    if (order.status === 'paid') return json({ ok: true });
+    if (env.TOSS_SECRET_KEY && data.paymentKey) {
+      const auth = btoa(`${env.TOSS_SECRET_KEY}:`);
+      const toss = await fetch('https://api.tosspayments.com/v1/payments/confirm', { method: 'POST', headers: { authorization: `Basic ${auth}`, 'content-type': 'application/json' }, body: JSON.stringify({ paymentKey: data.paymentKey, orderId: `shop-${order.id}`, amount }) });
+      if (!toss.ok) return json({ error: '결제 승인에 실패했습니다.' }, 400);
+    }
+    await env.DB.prepare("UPDATE orders SET status = 'paid', payment_key = ?1, paid_at = CURRENT_TIMESTAMP WHERE id = ?2").bind(data.paymentKey || 'test-payment', order.id).run();
+    return json({ ok: true });
   }
 
   if (parts[0] === 'orders' && parts.length === 2 && request.method === 'GET') {
