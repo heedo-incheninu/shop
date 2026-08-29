@@ -56,9 +56,10 @@ button { cursor: pointer; }
 .quantity-control button, .quantity-control output { display: grid; place-items: center; border: 0; background: #ffffff; color: #232b35; }
 .quantity-control button { font-size: 18px; line-height: 1; }
 .quantity-control output { border-left: 1px solid #c6cdd4; border-right: 1px solid #c6cdd4; font-size: 14px; }
-.primary-button, .secondary-button { width: 100%; min-height: 44px; border-radius: 4px; padding: 10px 16px; font-size: 16px; font-weight: 700; }
+.primary-button, .secondary-button, .outline-button { width: 100%; min-height: 44px; border-radius: 4px; padding: 10px 16px; font-size: 16px; font-weight: 700; }
 .primary-button { border: 1px solid #232b35; background: #232b35; color: #ffffff; }
 .secondary-button { border: 1px solid #e0e3e7; background: #f2f4f6; color: #acb5bf; cursor: not-allowed; }
+.outline-button { border: 1px solid #232b35; background: #ffffff; color: #232b35; cursor: pointer; }
 
 .cart-page { background: #f0f0f0; padding: 40px 0 80px; min-height: calc(100vh - 80px); }
 .cart-page .page { margin-top: 0; }
@@ -104,9 +105,13 @@ button { cursor: pointer; }
 .orders-card { margin-top: 14px; }
 .order-history-row { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid #e0e3e7; padding: 16px 0; color: #232b35; font-size: 14px; }
 .order-history-row span:nth-child(2), .order-history-row span:nth-child(3) { text-align: right; }
-.account-card form { display: grid; gap: 10px; max-width: 360px; margin-top: 20px; }
-.account-card form h3 { margin: 0; font-size: 16px; }
-.account-card input { border: 1px solid #c6cdd4; border-radius: 4px; padding: 10px; }
+.auth-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; align-items: start; }
+.auth-form { display: grid; gap: 14px; }
+.auth-form label { display: grid; gap: 7px; color: #667380; font-size: 13px; }
+.auth-form input { width: 100%; min-height: 42px; border: 1px solid #c6cdd4; border-radius: 4px; padding: 10px; color: #232b35; background: #ffffff; }
+.auth-form .muted { margin: -5px 0 0; }
+.account-action { width: auto; margin-top: 16px; }
+.login-link { display: block; max-width: 240px; margin: 20px auto 0; }
 
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; border: 1px solid #232b35; border-radius: 4px; background: #232b35; color: #ffffff; padding: 12px 18px; font-size: 14px; transition: opacity .15s ease, transform .15s ease; }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }

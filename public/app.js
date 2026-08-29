@@ -28,7 +28,11 @@ async function request(path, options = {}) {
     ...options,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || '요청에 실패했습니다.');
+  if (!response.ok) {
+    const error = new Error(data.error || '요청에 실패했습니다.');
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -110,7 +114,7 @@ async function updateCartCount() {
 
 function productCard(product) {
   return `<article class="product-card">
-    <a href="./product/${product.id}" aria-label="${escapeHtml(product.name)} 상세 보기">
+    <a href="/product/${product.id}" aria-label="${escapeHtml(product.name)} 상세 보기">
       <img src="${product.imageUrl}" alt="${escapeHtml(product.name)}" />
       <h2>${escapeHtml(product.name)}</h2>
       <p class="price">${money(product.price)}</p>
@@ -125,7 +129,7 @@ async function renderHome() {
   const data = await request(`/products${query}`);
   shell('상품', `<div class="catalog-layout">
     <aside class="category-rail"><h2>분류</h2><nav class="category-list" aria-label="상품 분류">
-      ${categories.map((category) => `<a href="./${category === '전체' ? '' : `?category=${encodeURIComponent(category)}`}" ${selected === category ? 'aria-current="page"' : ''}>${category}</a>`).join('')}
+      ${categories.map((category) => `<a href="/${category === '전체' ? '' : `?category=${encodeURIComponent(category)}`}" ${selected === category ? 'aria-current="page"' : ''}>${category}</a>`).join('')}
     </nav></aside>
     <div class="product-grid">${data.products.length ? data.products.map(productCard).join('') : '<p class="empty">상품이 없습니다.</p>'}</div>
   </div>`);
@@ -222,21 +226,25 @@ async function renderPaymentResult(success) {
 }
 
 async function renderMypage() {
-  const session = await request('/session'); const data = await request('/orders');
-  const guest = session.user?.email?.endsWith('@local.invalid');
-  shell('마이페이지', `<div class="account-card"><h2>${escapeHtml(session.user?.name || 'Guest')}님</h2><p class="muted">${escapeHtml(session.user?.email || '')}</p>${guest ? '<form id="login-form"><h3>로그인</h3><input name="email" type="email" placeholder="이메일" required><input name="password" type="password" placeholder="비밀번호" required><button class="primary-button" type="submit">로그인</button></form><form id="register-form"><h3>회원가입</h3><input name="name" placeholder="이름" required><input name="email" type="email" placeholder="이메일" required><input name="password" type="password" minlength="8" placeholder="비밀번호(8자 이상)" required><button class="secondary-button" type="submit">회원가입</button></form>' : '<button class="secondary-button" id="logout-button" type="button">로그아웃</button>'}</div><section class="orders-card"><h2>주문 내역</h2>${data.orders.length ? data.orders.map((order) => `<a class="order-history-row" href="/order/${order.id}"><span>#${order.id}</span><span>${money(order.total)}</span><span>${order.status === 'paid' ? '결제 완료' : '결제 대기'}</span></a>`).join('') : '<p class="muted">주문 내역이 없습니다.</p>'}</section>`);
+  const session = await request('/session');
+  if (!session.user) {
+    shell('마이페이지', `<div class="auth-layout"><section class="account-card"><h2>로그인</h2><form id="login-form" class="auth-form"><label>이메일<input name="email" type="email" autocomplete="email" required></label><label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label><button class="primary-button" type="submit">로그인</button></form></section><section class="account-card"><h2>회원가입</h2><form id="register-form" class="auth-form"><label>이름<input name="name" autocomplete="name" required></label><label>이메일<input name="email" type="email" autocomplete="email" required></label><label>비밀번호<input name="password" type="password" minlength="8" autocomplete="new-password" required></label><p class="muted">비밀번호는 8자 이상 입력해 주세요.</p><button class="outline-button" type="submit">회원가입</button></form></section></div>`);
+  } else {
+    const data = await request('/orders');
+    shell('마이페이지', `<div class="account-card"><h2>${escapeHtml(session.user.name)}님</h2><p class="muted">${escapeHtml(session.user.email)}</p><button class="outline-button account-action" id="logout-button" type="button">로그아웃</button></div><section class="orders-card"><h2>주문 내역</h2>${data.orders.length ? data.orders.map((order) => `<a class="order-history-row" href="/order/${order.id}"><span>#${order.id}</span><span>${money(order.total)}</span><span>${order.status === 'paid' ? '결제 완료' : '결제 대기'}</span></a>`).join('') : '<p class="muted">주문 내역이 없습니다.</p>'}</section>`);
+  }
   document.querySelector('#login-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await request('/login', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }); await renderMypage(); } catch (error) { notify(error.message); } });
-  document.querySelector('#register-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await request('/register', { method: 'POST', body: JSON.stringify({ name: form.get('name'), email: form.get('email'), password: form.get('password') }) }); notify('가입되었습니다. 로그인해 주세요.'); event.currentTarget.reset(); } catch (error) { notify(error.message); } });
+  document.querySelector('#register-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const credentials = { email: form.get('email'), password: form.get('password') }; try { await request('/register', { method: 'POST', body: JSON.stringify({ name: form.get('name'), ...credentials }) }); await request('/login', { method: 'POST', body: JSON.stringify(credentials) }); await renderMypage(); notify('회원가입이 완료되었습니다.'); } catch (error) { notify(error.message); } });
   document.querySelector('#logout-button')?.addEventListener('click', async () => { await request('/logout', { method: 'POST' }); location.assign('/'); });
 }
 
 async function render() {
-  await request('/session');
   const publicMarker = '/public/';
   const path = filePreview
     ? `/${location.pathname.includes(publicMarker) ? location.pathname.split(publicMarker)[1] : ''}`.replace(/\/index\.html$/, '').replace(/\/$/, '') || '/'
     : location.pathname;
   try {
+    await request('/session');
     if (path === '/' || path === '') await renderHome();
     else if (path === '/cart') await renderCart();
     else if (path.startsWith('/pay/success')) await renderPaymentResult(true);
@@ -247,7 +255,10 @@ async function render() {
     else if (path.startsWith('/order/')) await renderOrder(path.split('/')[2]);
     else { if (!filePreview) history.replaceState({}, '', '/'); await renderHome(); }
     await updateCartCount();
-  } catch (error) { shell('오류', `<div class="empty">${escapeHtml(error.message)}</div>`); }
+  } catch (error) {
+    if (error.status === 401) shell('로그인이 필요합니다', '<div class="empty"><p>장바구니와 주문은 로그인 후 사용할 수 있습니다.</p><a class="primary-button login-link" href="/mypage">로그인·회원가입</a></div>');
+    else shell('오류', `<div class="empty">${escapeHtml(error.message)}</div>`);
+  }
 }
 
 document.addEventListener('click', (event) => {

@@ -28,7 +28,11 @@ async function sessionUser(request, env) {
     sid = crypto.randomUUID();
     setCookie = sessionCookie(sid);
   }
-  const existingSession = await env.DB.prepare('SELECT user_id AS userId FROM sessions WHERE id = ?1').bind(sid).first();
+  const existingSession = await env.DB.prepare(
+    `SELECT s.user_id AS userId
+       FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.id = ?1 AND u.email NOT LIKE '%@local.invalid' AND u.password_hash != '!guest-session!'`,
+  ).bind(sid).first();
   return { userId: existingSession?.userId || null, sid, setCookie, authenticated: Boolean(existingSession) };
 }
 
