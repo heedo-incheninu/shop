@@ -223,7 +223,10 @@ async function renderPaymentResult(success) {
 
 async function renderMypage() {
   const session = await request('/session'); const data = await request('/orders');
-  shell('마이페이지', `<div class="account-card"><h2>${escapeHtml(session.user?.name || 'Guest')}님</h2><p class="muted">${escapeHtml(session.user?.email || '')}</p></div><section class="orders-card"><h2>주문 내역</h2>${data.orders.length ? data.orders.map((order) => `<a class="order-history-row" href="/order/${order.id}"><span>#${order.id}</span><span>${money(order.total)}</span><span>${order.status === 'paid' ? '결제 완료' : '결제 대기'}</span></a>`).join('') : '<p class="muted">주문 내역이 없습니다.</p>'}</section>`);
+  const guest = session.user?.email?.endsWith('@local.invalid');
+  shell('마이페이지', `<div class="account-card"><h2>${escapeHtml(session.user?.name || 'Guest')}님</h2><p class="muted">${escapeHtml(session.user?.email || '')}</p>${guest ? '<form id="login-form"><h3>로그인</h3><input name="email" type="email" placeholder="이메일" required><input name="password" type="password" placeholder="비밀번호" required><button class="primary-button" type="submit">로그인</button></form>' : '<button class="secondary-button" id="logout-button" type="button">로그아웃</button>'}</div><section class="orders-card"><h2>주문 내역</h2>${data.orders.length ? data.orders.map((order) => `<a class="order-history-row" href="/order/${order.id}"><span>#${order.id}</span><span>${money(order.total)}</span><span>${order.status === 'paid' ? '결제 완료' : '결제 대기'}</span></a>`).join('') : '<p class="muted">주문 내역이 없습니다.</p>'}</section>`);
+  document.querySelector('#login-form')?.addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await request('/login', { method: 'POST', body: JSON.stringify({ email: form.get('email'), password: form.get('password') }) }); await renderMypage(); } catch (error) { notify(error.message); } });
+  document.querySelector('#logout-button')?.addEventListener('click', async () => { await request('/logout', { method: 'POST' }); location.assign('/'); });
 }
 
 async function render() {

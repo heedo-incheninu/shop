@@ -104,6 +104,9 @@ button { cursor: pointer; }
 .orders-card { margin-top: 14px; }
 .order-history-row { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid #e0e3e7; padding: 16px 0; color: #232b35; font-size: 14px; }
 .order-history-row span:nth-child(2), .order-history-row span:nth-child(3) { text-align: right; }
+.account-card form { display: grid; gap: 10px; max-width: 360px; margin-top: 20px; }
+.account-card form h3 { margin: 0; font-size: 16px; }
+.account-card input { border: 1px solid #c6cdd4; border-radius: 4px; padding: 10px; }
 
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; border: 1px solid #232b35; border-radius: 4px; background: #232b35; color: #ffffff; padding: 12px 18px; font-size: 14px; transition: opacity .15s ease, transform .15s ease; }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }
