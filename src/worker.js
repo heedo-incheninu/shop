@@ -80,9 +80,9 @@ function validQty(value) {
 
 async function cartRows(env, userId) {
   const result = await env.DB.prepare(
-    `SELECT c.product_id AS productId, c.qty, p.name, p.price, p.description, p.category, p.image_url AS imageUrl,
+    `SELECT c.product_id AS productId, c.qty, p.name, p.price, p.description, cat.name AS category, p.image_url AS imageUrl,
             (c.qty * p.price) AS subtotal
-       FROM cart_items c JOIN products p ON p.id = c.product_id
+       FROM cart_items c JOIN products p ON p.id = c.product_id JOIN categories cat ON cat.id = p.category_id
       WHERE c.user_id = ?1 ORDER BY c.id`,
   ).bind(userId).all();
   const items = result.results || [];
@@ -122,8 +122,8 @@ async function api(request, env, url) {
     const category = url.searchParams.get('category');
     if (category && !CATEGORIES.includes(category)) return json({ error: '잘못된 분류입니다.' }, 400);
     const query = category
-      ? 'SELECT id, name, price, description, category, image_url AS imageUrl FROM products WHERE category = ?1 ORDER BY id'
-      : 'SELECT id, name, price, description, category, image_url AS imageUrl FROM products ORDER BY id';
+      ? 'SELECT p.id, p.name, p.price, p.description, c.name AS category, p.image_url AS imageUrl FROM products p JOIN categories c ON c.id = p.category_id WHERE c.name = ?1 ORDER BY p.id'
+      : 'SELECT p.id, p.name, p.price, p.description, c.name AS category, p.image_url AS imageUrl FROM products p JOIN categories c ON c.id = p.category_id ORDER BY p.id';
     const result = category ? await env.DB.prepare(query).bind(category).all() : await env.DB.prepare(query).all();
     return withCookie(json({ products: result.results || [], categories: CATEGORIES }), session.setCookie);
   }
@@ -132,7 +132,7 @@ async function api(request, env, url) {
     const id = validProductId(parts[1]);
     if (!id) return json({ error: '잘못된 상품 번호입니다.' }, 400);
     const product = await env.DB.prepare(
-      'SELECT id, name, price, description, category, image_url AS imageUrl FROM products WHERE id = ?1',
+      'SELECT p.id, p.name, p.price, p.description, c.name AS category, p.image_url AS imageUrl FROM products p JOIN categories c ON c.id = p.category_id WHERE p.id = ?1',
     ).bind(id).first();
     return product ? withCookie(json({ product }), session.setCookie) : json({ error: '상품을 찾을 수 없습니다.' }, 404);
   }
